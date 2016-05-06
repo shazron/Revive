@@ -10,29 +10,12 @@
 
 typedef HMODULE(__stdcall* _LoadLibrary)(LPCWSTR lpFileName);
 typedef HANDLE(__stdcall* _OpenEvent)(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCWSTR lpName);
-typedef FARPROC(__stdcall* _GetProcAddress)(HMODULE hModule, LPCSTR  lpProcName);
 
 _LoadLibrary TrueLoadLibrary;
 _OpenEvent TrueOpenEvent;
-_GetProcAddress TrueGetProcAddress;
 
-HMODULE ReviveModule;
+WCHAR revModuleName[MAX_PATH];
 WCHAR ovrModuleName[MAX_PATH];
-
-FARPROC HookGetProcAddress(HMODULE hModule, LPCSTR lpProcName) 
-{
-	WCHAR modulePath[MAX_PATH];
-	GetModuleFileName(hModule, modulePath, sizeof(modulePath));
-	LPCWSTR moduleName = PathFindFileNameW(modulePath);
-	if (wcscmp(moduleName, ovrModuleName) == 0) {
-		FARPROC reviveFuncAddress = TrueGetProcAddress(ReviveModule, lpProcName);
-		if (reviveFuncAddress) {
-			return reviveFuncAddress;
-		}
-	}
-
-	return TrueGetProcAddress(hModule, lpProcName);
-}
 
 HANDLE WINAPI HookOpenEvent(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCWSTR lpName)
 {
@@ -45,16 +28,12 @@ HANDLE WINAPI HookOpenEvent(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCWSTR 
 
 HMODULE WINAPI HookLoadLibrary(LPCWSTR lpFileName)
 {
-	HMODULE hModule = TrueLoadLibrary(lpFileName);
-
-	// Only enable the GetProcAddress hook when the Oculus Runtime was loaded.
-	WCHAR modulePath[MAX_PATH];
-	GetModuleFileName(hModule, modulePath, sizeof(modulePath));
-	LPCWSTR moduleName = PathFindFileNameW(modulePath);
+	// We need to call TrueLoadLibrary() to ensure our module is ref counted.
+	LPCWSTR moduleName = PathFindFileNameW(lpFileName);
 	if (wcscmp(moduleName, ovrModuleName) == 0)
-		MH_EnableHook(GetProcAddress);
+		return TrueLoadLibrary(revModuleName);
 
-	return hModule;
+	return TrueLoadLibrary(lpFileName);
 }
 
 BOOL APIENTRY DllMain(HANDLE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
@@ -67,19 +46,17 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD ul_reason_for_call, LPVOID lpReserve
 	switch (ul_reason_for_call)
 	{
 		case DLL_PROCESS_ATTACH:
-			ReviveModule = (HMODULE)hModule;
+			swprintf(revModuleName, MAX_PATH, L"LibRevive%hs_%d.dll", pBitDepth, OVR_MAJOR_VERSION);
 			swprintf(ovrModuleName, MAX_PATH, L"LibOVRRT%hs_%d.dll", pBitDepth, OVR_MAJOR_VERSION);
 			MH_Initialize();
 			MH_CreateHook(LoadLibraryW, HookLoadLibrary, (PVOID*)&TrueLoadLibrary);
 			MH_CreateHook(OpenEventW, HookOpenEvent, (PVOID*)&TrueOpenEvent);
-			MH_CreateHook(GetProcAddress, HookGetProcAddress, (PVOID*)&TrueGetProcAddress);
 			MH_EnableHook(LoadLibraryW);
 			MH_EnableHook(OpenEventW);
 			break;
 		case DLL_PROCESS_DETACH:
 			MH_RemoveHook(LoadLibraryW);
 			MH_RemoveHook(OpenEventW);
-			MH_RemoveHook(GetProcAddress);
 			MH_Uninitialize();
 			break;
 		default:
